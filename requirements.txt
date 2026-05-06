@@ -1,0 +1,3 @@
+kaggle>=1.6.0
+kaggle-environments @ git+https://github.com/Kaggle/kaggle-environments.git@master
+kagglehub>=1.0.1
