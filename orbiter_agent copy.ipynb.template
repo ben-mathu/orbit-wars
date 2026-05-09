@@ -1,0 +1,131 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "8877eeff",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "%%capture\n",
+    "!pip install --upgrade \"kaggle-environments>=1.28.0\""
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "2dabed57",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from kaggle_environments import make\n",
+    "\n",
+    "env = make(\"orbit_wars\", debug=True)\n",
+    "env.run([\"random\", \"random\"])\n",
+    "\n",
+    "from kaggle_environments.envs.orbit_wars.orbit_wars import Planet, Fleet, COMET_SPAWN_STEPS\n",
+    "\n",
+    "obs = env.steps[1][0].observation\n",
+    "planets = [Planet(*p) for p in obs.planets]\n",
+    "\n",
+    "print(f\"Player: {obs.player}\")\n",
+    "print(f\"Angular velocity: {obs.angular_velocity:.4f} rad/turn\")\n",
+    "print(f\"\\nPlanets ({len(planets)}):\")\n",
+    "\n",
+    "print(f\"Initial Planet {obs.initial_planets}\")\n",
+    "\n",
+    "obs = env.steps[COMET_SPAWN_STEPS[0]][0].observation\n",
+    "comet_planet_ids = obs.get(\"comet_planet_ids\", [])\n",
+    "print(f\"Commets {len(comet_planet_ids)}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 123,
+   "id": "ff0a4df8",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "%run submission.py"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b25fdb04",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "\n",
+    "output_dir = \"dist\"\n",
+    "if not os.path.exists(output_dir):\n",
+    "    os.makedirs(output_dir)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "511b9238",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from kaggle_environments import make\n",
+    "\n",
+    "# Test it against the random agent\n",
+    "env = make(\"orbit_wars\", debug=True)\n",
+    "env.run([agent, \"random\"])\n",
+    "\n",
+    "final = env.steps[-1]\n",
+    "for i, s in enumerate(final):\n",
+    "    print(f\"Player {i}: reward={s.reward}, status={s.status}\")\n",
+    "\n",
+    "# env.render(mode=\"ipython\", width=800, height=600)\n",
+    "with open(f\"{output_dir}/replay.html\", \"w\", encoding=\"utf-8\") as f:\n",
+    "    f.write(env.render(mode=\"html\"))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "78301111",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from kaggle_environments import make\n",
+    "\n",
+    "env4 = make(\"orbit_wars\", debug=True)\n",
+    "env4.run([agent, \"random\", \"random\", \"random\"])\n",
+    "\n",
+    "final = env4.steps[-1]\n",
+    "for i, s in enumerate(final):\n",
+    "    print(f\"Player {i}: reward={s.reward}, status={s.status}\")\n",
+    "\n",
+    "# env4.render(mode=\"ipython\", width=800, height=600)\n",
+    "with open(f\"{output_dir}/replay-multi.html\", \"w\", encoding=\"utf-8\") as f:\n",
+    "    f.write(env4.render(mode=\"html\"))"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "orbit-wars",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.14.4"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
