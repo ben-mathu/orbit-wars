@@ -2,7 +2,8 @@ import math
 from kaggle_environments.envs.orbit_wars.orbit_wars import Planet, Fleet, COMET_SPAWN_STEPS
 from itertools import count
 
-INTERCEPT_THRESHOLD = 0.016
+INTERCEPT_THRESHOLD = 0.012
+FLEET_LAUNCH_THRESHOLD = 0.2
 
 sun_config = (50.0, 50.0, 10.0)
 time = 0
@@ -137,7 +138,7 @@ def get_moves(target, reserved_targets, initial_targets, mine, angular_velocity,
         
     angle, tx, ty, ships_needed = get_angle(dx, dy, initial_target, target, angular_velocity, mine)
         
-    if mine.ships >= ships_needed:
+    if mine.ships >= ships_needed + (FLEET_LAUNCH_THRESHOLD * mine.ships):
         distance_r, dot_product, nearest_dot_product = cal_intercept_with_sun(mine.x, mine.y, tx, ty, angle)
 
         move = [mine.id, angle, ships_needed]
