@@ -2,13 +2,14 @@ import math
 from kaggle_environments.envs.orbit_wars.orbit_wars import Planet, Fleet, COMET_SPAWN_STEPS
 from itertools import count
 
-INTERCEPT_THRESHOLD = 0.012
+INTERCEPT_THRESHOLD = 0.01
 FLEET_LAUNCH_THRESHOLD = 0.2
 
 sun_config = (50.0, 50.0, 10.0)
 time = 0
 
 fleet_target_map = {} # maps already targeted planets 
+planet_ownership_map = {}
 launch_history = []
 
 def find_planet(planets, id):
@@ -101,7 +102,7 @@ def get_inputs(obs):
     
     fleets_owned = [f for f in fleets if f.owner == player]
     
-    return my_planets, targets, initial_targets, fleets_owned, comet_planet_ids
+    return player, my_planets, targets, initial_targets, fleets_owned, comet_planet_ids
 
 def cal_fleet_speed(num_of_ships):
     return 1.0 + (6.0 - 1.0) * (math.log(num_of_ships) / math.log(1000)) ** 1.5
@@ -153,13 +154,25 @@ def agent(obs):
     time += 1
     
     moves = []
-    my_planets, targets, initial_targets, fleets_owned, comet_planet_ids = get_inputs(obs)
+    player, my_planets, targets, initial_targets, fleets_owned, comet_planet_ids = get_inputs(obs)
 
     if not targets:
         return []
     
     current_fleet_ids = {f.id for f in fleets_owned}
-    fleet_target_map = {fid: tid for fid, tid in fleet_target_map.items() if fid in current_fleet_ids}
+    
+    new_fleet_target_map = {}
+    for fid, tid in fleet_target_map.items():
+        ownership = next((p.owner for p in targets if p.id == tid and p.owner != player and p.owner > -1), None)
+        
+        ownership_changed = False
+        if tid in planet_ownership_map:
+            ownership_changed = planet_ownership_map[tid] != ownership
+            
+        if fid in current_fleet_ids and not ownership_changed:
+            new_fleet_target_map[fid] = tid
+        planet_ownership_map[tid] = ownership
+    fleet_target_map = new_fleet_target_map
 
     sync_new_fleets(fleets_owned)
     reserved_targets = set(fleet_target_map.values())
