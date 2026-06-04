@@ -1,44 +1,139 @@
 import functools
 import math
-import random
 from kaggle_environments.envs.orbit_wars.orbit_wars import Planet, Fleet, COMET_SPAWN_STEPS
 
 INTERCEPT_THRESHOLD = 0.1
 DAMPING_FACTOR = 0.05
 FLEET_LAUNCH_THRESHOLD = 0.1 # retaining planet ship when launching does not help, occupy as much as possible
-total_targets = 5
 
 sun_config = (50.0, 50.0, 10.0)
         
-time = 1
+time = 0
 
 fleet_target_map = {} # maps already targeted planets
 launch_history = []
-planets_orbit_paths = {}
-fleet_speed = {}
-participation = 0
-generation = 1
-total_error = 0.0
-best_threshold = INTERCEPT_THRESHOLD
-best_damping = DAMPING_FACTOR
-best_score = float("inf")
-cache_score = 0.0
+
+comets_expire_time_map = {}
+
+planets_num = (20, 40)
+target_range = (4, 7)
+time_past = 0
+
+planet_production_range = (1, 5)
+percentage_range = (0.3, 0.8)
+show_logs = False
+
+last_know_size_map = {}
+
+def log(message: str):
+    if show_logs: print(message)
+
+def interpolate(input, input_range, output_range):
+    ratio = (input - input_range[0]) / (input_range[1] - input_range[0])
+    scale = output_range[1] - output_range[0]
+    return output_range[0] + ratio * scale
+
+def min_retention(planet_size, planet_prod):
+    perc = interpolate(planet_prod, planet_production_range, percentage_range)
+    return int(perc / 100 * planet_size)
+
+def map_total_targets(actual):
+    return int(interpolate(actual, planets_num, target_range))
+
+def cal_intercept_2(target, angular_v, origin_x, origin_y, launch_perc=None):    
+    dx = target.x - sun_config[0]
+    dy = target.y - sun_config[1]
+    current_angle = math.atan2(dy, dx)
+    planet_r = cal_hypotenus(sun_config[0], sun_config[1], target.x, target.y) # distance fromt the sun's center to the target planet
+
+    for t in range(0, 30):
+        if target.owner > -1:
+            ships = (t * target.production) + target.ships + 1
+            ships_needed =  launch_perc * ships if launch_perc else ships
+        else:
+            ships_needed = target.ships + 1
+            
+        ships_needed = math.ceil(ships_needed)
+
+        next_angle = current_angle + (angular_v * t)
         
-def cal_intercept(planet, angular_v, launcher_pos, threshold = INTERCEPT_THRESHOLD, damping = 1.0):
-    dx = planet.x - sun_config[0]
-    dy = planet.y - sun_config[1]
+        tx = sun_config[0] + (planet_r * math.cos(next_angle))
+        ty = sun_config[1] + (planet_r * math.sin(next_angle))
+        
+        dist = cal_hypotenus(origin_x, origin_y, tx, ty)
+        
+        # round down because fleet over shot - this fixed 99 % of launches
+        if math.floor(dist/cal_fleet_speed(ships_needed)) <= t:
+            return None, tx, ty, ships_needed
+        
+    return None
+        
+
+def cal_intercept_with_transformations(target, angular_v, origin_x, origin_y, threshold = INTERCEPT_THRESHOLD, damping = 1.0, launch_perc=None):
+    initial_dist = cal_hypotenus(origin_x, origin_y, target.x, target.y)
+
+    ships_needed = target.ships + 1 # minimum ships neeeded
+    t = initial_dist / cal_fleet_speed(ships_needed) # minimum time
+    
+    dx = target.x - sun_config[0]
+    dy = target.y - sun_config[1]
+    
+    for _ in range(5):
+        angular_displacement = angular_v * t
+        cos_t = math.cos(angular_displacement)
+        sin_t = math.sin(angular_displacement)
+
+        tx = (dx * cos_t) - (dy * sin_t) + sun_config[0]
+        ty = (dx * sin_t) + (dy * cos_t) + sun_config[1]
+        
+        dist = math.hypot(origin_x - tx, origin_y - ty)
+        
+        # Dynamic defense update
+        if target.owner > -1:
+            ships = (t * target.production) + target.ships + 1
+            ships_needed =  launch_perc * ships if launch_perc else ships
+            
+        travel_time = dist / cal_fleet_speed(ships_needed)
+        
+        if abs(t - travel_time) < threshold:
+            arrival_turn = math.ceil(t)
+            fleet_travel_dist = ships_needed * arrival_turn
+            return abs(dist - fleet_travel_dist), tx, ty, ships_needed
+        
+        # Fixed-point iteration step to adjust our time guess
+        t = (t * (1.0 - damping)) + (travel_time * damping)
+    return None
+
+def cal_intercept(target, angular_v, player, origin_x, origin_y, threshold = INTERCEPT_THRESHOLD, damping = 1.0, launch_perc=None):
+    """calculates the intercept point from an origin(fleet/planet) to an orbiting planet
+
+    Args:
+        target (Planet): target planet
+        angular_v (float): rate of displacement of an orbiting planet
+        origin_x (float): origin point x
+        origin_y (float): origin point x
+        threshold (float, optional): least time difference between the orbiting planet and arrival time. Defaults to INTERCEPT_THRESHOLD.
+        damping (float, optional): I don't know it is used in RL to reduce noise. Defaults to 1.0.
+        launch_perc (float): minmum percentage of fleet to deploy
+        
+    Returns:
+        tuple: score in RL, coordinates and fleet speed
+    """
+    dx = target.x - sun_config[0]
+    dy = target.y - sun_config[1]
     
     current_angle = math.atan2(dy, dx)
-    planet_r = cal_hypotenus(sun_config[0], sun_config[1], planet.x, planet.y) # distance fromt the sun's center to the target planet
+    planet_r = cal_hypotenus(sun_config[0], sun_config[1], target.x, target.y) # distance fromt the sun's center to the target planet
     
-    ships_needed = planet.ships + 1
-    initial_dist = cal_hypotenus(launcher_pos.x, launcher_pos.y, planet.x, planet.y)
-    t = initial_dist / cal_fleet_speed(ships_needed)
+    initial_dist = cal_hypotenus(origin_x, origin_y, target.x, target.y)
+
+    ships_needed = target.ships + 1 # minimum ships neeeded
+    t = initial_dist / cal_fleet_speed(ships_needed) # minimum time
     
-    tx = planet.x
-    ty = planet.y
+    tx = target.x
+    ty = target.y
     
-    for _ in range(100):
+    for _ in range(10):
         # angular_v * time = angular displacement
         target_angle = current_angle + (angular_v * t) # calculate the next angle given the time, t
         
@@ -47,68 +142,25 @@ def cal_intercept(planet, angular_v, launcher_pos, threshold = INTERCEPT_THRESHO
         ty = sun_config[1] + (planet_r * math.sin(target_angle))
         
         # cal the distance and time the planet would travel
-        dist = cal_hypotenus(launcher_pos.x, launcher_pos.y, tx, ty)
+        dist = cal_hypotenus(origin_x, origin_y, tx, ty)
         
-        prod = planet.production if planet.owner > -1 else 0
-        ships_needed = (t * prod) + planet.ships + 1
+        prod = target.production if target.owner > -1 and target.owner != player else 0
+        ships_needed = launch_perc * ((t * prod) + target.ships + 1) if prod == 0 and launch_perc else (t * prod) + target.ships + 1
 
         travel_time = dist / cal_fleet_speed(ships_needed)
         
         # cal dot_product and miss distance from fleet/launch pos to target
-        dx = tx - launcher_pos.x
-        dy = tx - launcher_pos.y
-        launch_angle = math.atan2(dy, dx)
-        miss_distance = abs(dx * math.sin(launch_angle) - dy * math.cos(launch_angle))
+        # calculating miss distance is unnecessary because projected coordinates is where the target center will be
 
-        if abs(t - travel_time) < threshold and miss_distance <= planet.radius: # Threshold for 'close enough'
+        if abs(t - travel_time) < threshold: # Threshold for 'close enough'
             arrival_turn = math.ceil(t)
             fleet_travel_dist = ships_needed * arrival_turn
-            return abs(dist - fleet_travel_dist), tx, ty, math.ceil(ships_needed)
-        
-        # t = (t * ((1.0 - damping) + (travel_time + damping)))
+            return abs(dist - fleet_travel_dist), tx, ty, ships_needed
+    
         t = travel_time
     return None
 
-def evaluate_policy(planet, angular_v, launcher_pos, test_threshold, test_damping):
-    global total_error
-    result = cal_intercept(planet, angular_v, launcher_pos, test_threshold, test_damping)
-    if result:
-        error, tx, ty, speed = result
-        total_error += error
-        
-        return total_error / time, tx, ty, speed
-    return None
-
-def run_policy_search(planet, angular_v, launcher_pos):
-    global generation
-    global best_damping
-    global best_score
-    global best_threshold
-
-    result = evaluate_policy(planet, angular_v, launcher_pos, best_threshold, best_damping)
-    if result:
-        score, tx, ty, speed = result
-        for generation in range(1, 51):
-            noise_scale = max(0.01, 1.0 / generation)
-
-            test_threshold = max(1e-5, best_threshold + random.gauss(0, 0.1 * noise_scale))
-            test_damping = max(0.1, min(0.9, best_damping + random.gauss(0, 0.2 * noise_scale)))
-            # test_threshold = max(1e-4, best_threshold + random.gauss(0, 0.01))
-            # test_damping = max(0.1, min(0.9, best_damping + random.gauss(0, 0.05)))
-            result = evaluate_policy(planet, angular_v, launcher_pos, test_threshold, test_damping)
-
-            if result:
-                score, _, _, _ = result
-                if score < best_score:
-                    best_score = score
-                    best_threshold = test_threshold
-                    best_damping = test_damping
-                    # generation += 1
-
-            return score, tx, ty, speed
-    return None
-
-def cal_intercept_with_sun(start_x, start_y, nearest_x, nearest_y, angle):
+def collides_with_sun(start_x, start_y, target_x, target_y, angle):
     """calculations to check if fleet will hit the sun
 
     Args:
@@ -124,42 +176,69 @@ def cal_intercept_with_sun(start_x, start_y, nearest_x, nearest_y, angle):
             - dot_product - if target is behind or in front of sun,
             - nearest_dot_product - check if target is behind or in front of sun
     """
-    dx = sun_config[0] - start_x
-    dy = sun_config[1] - start_y
     
-    nx = sun_config[0] - nearest_x
-    ny = sun_config[1] - nearest_y
+    distance_to_sun = cal_hypotenus(start_x, start_y, sun_config[0], sun_config[1])
+    distance_to_target = cal_hypotenus(start_x, start_y, target_x, target_y)
+    will_hit = collides_with_obstacle(start_x, start_y, sun_config[0], sun_config[1], angle, sun_config[2])
+    return will_hit and distance_to_target > distance_to_sun
+
+def collides_with_obstacle(start_x, start_y, px, py, angle, radius):
+    """checks collision with (px, py) given the angle of projection
+
+    Args:
+        start_x (_type_): _description_
+        start_y (_type_): _description_
+        px (_type_): _description_
+        py (_type_): _description_
+        angle (_type_): _description_
+        radius (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    dx = px - start_x
+    dy = py - start_y
     
     miss_distance = abs(dx * math.sin(angle) - dy * math.cos(angle))
     dot_product = dx * math.cos(angle) + dy * math.sin(angle)
     
-    nearest_angle = math.atan2(ny, nx) # calculates the angle of target to sun
-    nearest_dot_product = nx * math.cos(nearest_angle) + ny * math.sin(nearest_angle)
-    return miss_distance, dot_product, nearest_dot_product
+    if dot_product > 0 and miss_distance <= radius:
+        return True
+    return False
+
+def search_collisions(start_x, start_y, launch_id, target_id, target_x, target_y, angle, planets):
+    for p in planets:
+        if p.id == target_id or p.id == launch_id: continue
         
-def get_angle(dx, dy, target, angular_velocity, my_planet):
+        distance_to_target = cal_hypotenus(start_x, start_y, target_x, target_y)
+        distance_to_obstacal = cal_hypotenus(start_x, start_y, p.x, p.y)
+        
+        if collides_with_obstacle(start_x, start_y, p.x, p.y, angle, p.radius) and distance_to_target > distance_to_obstacal:
+            return True
+    return False
+        
+def get_angle(dx, dy, target, angular_velocity, my_planet, launch_perc):
     angle = math.atan2(dy, dx)
-    tx, ty, ships_needed = target.x, target.y, target.ships + 1
     if is_orbiting(target):
-        result = cal_intercept(target, angular_velocity, my_planet)
+        result = cal_intercept_2(target, angular_velocity, my_planet.x, my_planet.y, launch_perc=launch_perc)
         if result != None:
             _, tx, ty, ships_needed = result
             angle = math.atan2(ty - my_planet.y, tx - my_planet.x)
-            return angle, tx, ty, ships_needed
+            return angle, ships_needed, tx, ty
     elif target.owner == -1:
-        return angle, tx, ty, ships_needed
+        ships_needed = launch_perc * (target.ships + 1) if launch_perc else target.ships + 1
+        return angle, ships_needed, target.x, target.y
     else:
         # Calculates time to arrive and compares with travel time
         # production, distance, current number of ships
         distance = cal_hypotenus(my_planet.x, my_planet.y, target.x, target.y)
-        for t in range(1, 20):
+        for t in range(1, 100):
             num_ships = (t * target.production) + target.ships
             travel_time = distance / cal_fleet_speed(num_ships)
             
             if travel_time <= t: # check if the time take is optimal, larger number of ship == less time
                 ships_needed = num_ships
-                break
-        return angle, tx, ty, math.ceil(ships_needed)
+                return angle, math.ceil(ships_needed), target.x, target.y
     return None
 
 def get_inputs(obs):
@@ -167,19 +246,19 @@ def get_inputs(obs):
     planets = [Planet(*p) for p in obs.get("planets", [])]
     fleets = [Fleet(*f) for f in obs.get("fleets", [])]
     
-    comet_planet_ids = obs.get("comet_planet_ids", [])
-    
     fleets_owned = [f for f in fleets if f.owner == player]
+    other_fleets = [f for f in fleets if f.owner != player]
     
-    return player, planets, fleets_owned, comet_planet_ids
+    return player, planets, fleets_owned, other_fleets
 
-@functools.lru_cache(maxsize=1024)
+# @functools.lru_cache(maxsize=1024)
 def cal_fleet_speed(num_of_ships):
-    if num_of_ships in fleet_speed:
-        return fleet_speed[num_of_ships]
+    # if num_of_ships in fleet_speed:
+    #     return fleet_speed[num_of_ships]
     
-    speed = 1.0 + (6.0 - 1.0) * (math.log(num_of_ships) / math.log(1000)) ** 1.5
-    fleet_speed[num_of_ships] = speed
+    ratio = math.log(num_of_ships) / math.log(1000)
+    speed = 1.0 + (6.0 - 1.0) * ratio ** 1.5
+    # fleet_speed[num_of_ships] = speed
     return speed
 
 def sync_new_fleets(fleet_owned):
@@ -200,65 +279,100 @@ def sync_new_fleets(fleet_owned):
 def cal_hypotenus(x0, y0, x1, y1):
     return math.hypot(x1 - x0, y1 - y0)
 
-def get_moves(target, reserved_targets, mine, angular_velocity, comet_planet_ids):
+
+def get_moves(target, reserved_targets, mine, angular_velocity, comet_planet_ids, planets, launch_perc=None):
     # reserved_targets - target with launched fleet
-    if target.id in comet_planet_ids or target.id in reserved_targets:
+    if target.id in comet_planet_ids:
+        return None
+    
+    if target.id in reserved_targets:
         return None
 
     dx = target.x - mine.x
     dy = target.y - mine.y
         
-    result = get_angle(dx, dy, target, angular_velocity, mine)
+    result = get_angle(dx, dy, target, angular_velocity, mine, launch_perc)
     if result == None: return None
     
-    angle, tx, ty, ships_needed = result
-    if (tx, ty) == (target.x, target.y) and is_orbiting(target): return None
+    angle, ships_needed, tx, ty = result
         
-    if mine.ships >= ships_needed:
-        distance_r, dot_product, nearest_dot_product = cal_intercept_with_sun(mine.x, mine.y, tx, ty, angle)
-
-        move = [mine.id, angle, ships_needed]
-        if not (dot_product > 0 and distance_r <= sun_config[2]) or nearest_dot_product > 0:
+    if mine.ships >= (ships_needed + mine.ships * FLEET_LAUNCH_THRESHOLD):
+        move = [mine.id, angle, math.ceil(ships_needed)]
+        
+        will_hit_sun = collides_with_sun(mine.x, mine.y, tx, ty, angle)
+        will_hit_obstacle = search_collisions(mine.x, mine.y, mine.id, target.id, target.x, target.y, angle, planets)
+        if not (will_hit_sun or will_hit_obstacle):
             launch_history.append([mine.id, target.id, angle, time])
             reserved_targets.add(target.id)
             return move
+    return None
 
 def is_orbiting(planet):
     sun_planet_distance = cal_hypotenus(sun_config[0], sun_config[1], planet.x, planet.y)
     return sun_planet_distance + planet.radius < 50
-
-def cal_all_planet_orbits(planets, angular_v):
-    for planet in planets:
-        if is_orbiting(planet):
-            dx = planet.x - sun_config[0]
-            dy = planet.y - sun_config[1]
-            
-            R = math.hypot(dx, dy)
-            current_angle = math.atan2(dy, dx)
-            planets_orbit_paths[planet.id] = {}
-            
-            for t in range(100):
-                angle = current_angle + (angular_v * t)
                 
-                tx = sun_config[0] + (R * math.cos(angle))
-                ty = sun_config[1] + (R * math.sin(angle))
-                planets_orbit_paths[planet.id][time+t] = (tx, ty)
-
+def deploy_comet_ships(times, mine, target):
+    if time == times[0] + times[1] - 2:
+        dx = target.x - mine.x
+        dy = target.y - mine.y
+        angle = math.atan2(dy, dx)
+        return [mine.id, angle, mine.ships]
+    return None
+    
 def agent(obs):
     global time
-    global participation
     global fleet_target_map
+    global comets_expire_time_map
+    global last_know_size_map
     
+    time += 1
     moves = []
-    player, planets, fleets_owned, comet_planet_ids = get_inputs(obs)
+    player, planets, fleets_owned, other_fleets = get_inputs(obs)
 
-    my_planets = [p for p in planets if p.owner == player]
+    my_planets = {p.id: p for p in planets if p.owner == player}
+    temp_last_know_size_map = {my_planets[p].id: my_planets[p].ships for p in my_planets}
+
     targets = [p for p in planets if p.owner != player]
+    comet_planet_ids = obs.get("comet_planet_ids", [])
     
-    total_targets = 3 if my_planets < targets else int(FLEET_LAUNCH_THRESHOLD * len(targets))
-    
+    planet_ids = []
+    if time_past and time > time_past[0] and not comets_expire_time_map:
+        comets = obs.get("comets", [])
+        
+        if comets:
+            paths = comets[0]["paths"]
+            planet_ids = comets[0]["planet_ids"]
+            
+            comets_expire_time_map = {planet_ids[i]: (time, len(c)) for i, c in enumerate(paths)}
+        else: comets_expire_time_map = {}
+
     if not targets:
         return []
+    
+    for f in other_fleets:
+        for id in my_planets:
+            t = my_planets[id]
+            
+            # check if a planet goes below a retention threshold
+            # IDEA: create a map of my planets with current ships
+            # retention = min_retention(last_know_size_map[t.id], t.production) if t.id in last_know_size_map else None
+            # if retention and t.ships <= retention:
+            #     targets.append(t)
+            #     continue
+            
+            if is_orbiting(t):
+                result = cal_intercept_2(t, obs.angular_velocity, f.x, f.y)
+                if result:
+                    _, _, _, future_defense = result
+                else:
+                    continue
+            else:
+                dist = cal_hypotenus(f.x, f.y, t.x, t.y)
+                eta = dist / cal_fleet_speed(f.ships)
+                future_defense = t.ships + (t.production * eta)
+            
+            if f.ships > future_defense:
+                targets.append(t)
     
     new_fleet_target_map = {}
     for fid, tid in fleet_target_map.items():
@@ -268,8 +382,14 @@ def agent(obs):
         f = next((f for f in fleets_owned if f.id == fid), None)
         if not f: continue
         
+        attack_f = next((f for f in other_fleets if f.id == fid), None)
+        if not f: continue
+        
         if t.owner == player or t.owner == -1:
-            new_fleet_target_map[fid] = tid
+            if attack_f and f.ships > attack_f.ships:
+                new_fleet_target_map[fid] = tid
+            elif not attack_f:
+                new_fleet_target_map[fid] = tid
         else:
             dist = cal_hypotenus(f.x, f.y, t.x, t.y)
             eta = dist / cal_fleet_speed(f.ships)
@@ -282,24 +402,75 @@ def agent(obs):
     
     sync_new_fleets(fleets_owned)
     reserved_targets = set(fleet_target_map.values())
+    
+    if comets_expire_time_map:
+        for id in comets_expire_time_map:
+            if id not in my_planets: continue
+            
+            mine = my_planets[id]
+            target = sorted(planets, key=lambda t: cal_hypotenus(mine.x, mine.y, t.x, t.y))[0]
+            move = deploy_comet_ships(comets_expire_time_map[id], mine, target)
+            if move and not next((m for m in moves if move[0] == m[0]), None):
+                if target.id in temp_last_know_size_map:
+                    log(f"{time} [comet_targets]: Reinforced {target.id} with {move[2]} ships {target.ships}")
+                    temp_last_know_size_map[target.id] += move[2]
+                    
+                log(f"{time} [comet_targets]: Planet {id} sending {move[2]} to capture target -> ID: {target.id} production {target.production} ships {target.ships} owner {target.owner}")
+                moves.append(move)
 
     if len(my_planets) > len(targets):
         for target in targets:
             # get sorted list of nearest planets owned to launch from
-            next_nearest_list = sorted(my_planets, key=lambda mine: cal_hypotenus(mine.x, mine.y, target.x, target.y))
-            for mine in next_nearest_list:
-                move = get_moves(target, reserved_targets, mine, obs.angular_velocity, comet_planet_ids)
-                if move != None:
+            next_nearest_list = sorted(my_planets, key=lambda id: cal_hypotenus(my_planets[id].x, my_planets[id].y, target.x, target.y))
+            for id in next_nearest_list:
+                move = get_moves(target, reserved_targets, my_planets[id], obs.angular_velocity, comet_planet_ids, planets)
+
+                if not move and target.production >= 4 and target.owner == -1:
+                    break
+
+                if not (move == None or next((m for m in moves if move[0] == m[0]), None)):
+                    log(f"{time} [my_group]: Planet {id} sending {move[2]} to capture target -> ID: {target.id}  production {target.production} Planet Ships {target.ships} Owner {target.owner}")
+                    if target.id in temp_last_know_size_map:
+                        log(f"{time} [my_group]: Reinforced {target.id} with {move[2]} ships {target.ships}")
+                        temp_last_know_size_map[target.id] += move[2]
+                        
                     moves.append(move)
     else:
-        for mine in my_planets:
+        for id in my_planets:
+            ships = my_planets[id].ships
+            
             # Find nearest 3 planets we don't own
-            next_nearest_list = sorted(targets, key=lambda t: cal_hypotenus(mine.x, mine.y, t.x, t.y))[:total_targets]
-            for target in next_nearest_list:
-                move = get_moves(target, reserved_targets, mine, obs.angular_velocity, comet_planet_ids)
-                if move != None:
+            targets_count = map_total_targets(len(planets))
+            next_nearest_list = sorted(targets, key=lambda t: (cal_hypotenus(my_planets[id].x, my_planets[id].y, t.x, t.y), -t.production))[:targets_count]
+            for i, target in enumerate(next_nearest_list):
+                perc = None
+                large_planet_found = False
+                
+                if i < 5 and target.production >= 4:
+                    large_planet_found = True
+                    move = get_moves(target, reserved_targets, my_planets[id], obs.angular_velocity, comet_planet_ids, planets)
+
+                    if not (move == None or next((m for m in moves if move[0] == m[0]), None)):
+                        log(f"{time} [nearest_largest]: Planet {id} sending {move[2]} to capture target -> ID: {target.id} production {target.production} ships {target.ships} owner {target.owner}")
+                        ships -= move[2]
+                        moves.append(move)
+                        continue
+                    
+                # if len(my_planets) > 1 and len(planets) == 20 and large_planet_found and not move:
+                #     break
+                            
+                if ships <= 0: break
+                
+                move = get_moves(target, reserved_targets, my_planets[id], obs.angular_velocity, comet_planet_ids, planets, perc)
+                if not (move == None or next((m for m in moves if move[0] == m[0]), None)):
+                    log(f"{time} [target_groups]: Planet {id} sending {move[2]} to capture target -> ID: {target.id} production {target.production} ships {target.ships} owner {target.owner}")
+                    if target.id in temp_last_know_size_map:
+                        log(f"{time} [target_groups]: Reinforced {target.id} with {move[2]} ships {target.ships}")
+                        temp_last_know_size_map[target.id] += move[2]
+
+                    ships -= move[2]
                     moves.append(move)
-    time += 1
-    participation += 1
-    # print(f"Best Threshold: {best_threshold}, Best Damping: {best_damping}")
+
+    log(f"{time} [overview]: Moves {len(moves)}")
+    last_know_size_map = temp_last_know_size_map
     return moves
