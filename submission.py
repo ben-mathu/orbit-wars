@@ -375,6 +375,7 @@ def agent(obs):
                 targets.append(t)
     
     new_fleet_target_map = {}
+    attack_fleet_list = []
     for fid, tid in fleet_target_map.items():
         t = next((p for p in planets if p.id == tid), None)
         if not t : continue
@@ -382,14 +383,12 @@ def agent(obs):
         f = next((f for f in fleets_owned if f.id == fid), None)
         if not f: continue
         
-        attack_f = next((f for f in other_fleets if f.id == fid), None)
-        if not f: continue
+        # attack_f = next((f for f in other_fleets if f.id not in attack_fleet_list), None)
+        # if attack_f: attack_fleet_list.append(attack_f.id)
         
         if t.owner == player or t.owner == -1:
-            if attack_f and f.ships > attack_f.ships:
-                new_fleet_target_map[fid] = tid
-            elif not attack_f:
-                new_fleet_target_map[fid] = tid
+            # if attack_f and f.ships > attack_f.ships:
+            new_fleet_target_map[fid] = tid
         else:
             dist = cal_hypotenus(f.x, f.y, t.x, t.y)
             eta = dist / cal_fleet_speed(f.ships)
